@@ -14,6 +14,7 @@ from .config import settings
 from .database import get_db, init_db
 from .schemas import InboxOut, MessageSummaryOut, MessageDetailOut
 from .cleanup import cleanup_loop
+from .middleware.gateway_auth import GatewayAuthMiddleware
 
 
 def _random_local_part(length: int = 10) -> str:
@@ -31,6 +32,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Temp Mail API", lifespan=lifespan)
+
+app.add_middleware(GatewayAuthMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
