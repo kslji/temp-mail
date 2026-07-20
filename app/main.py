@@ -198,3 +198,9 @@ async def _require_inbox(address: str, db) -> dict:
         await db.messages.delete_many({"inbox_id": inbox["_id"]})
         raise HTTPException(404, "Inbox expired")
     return inbox
+
+
+@app.get("/health", tags=["system"])
+def health():
+    return {"status": "ok"}
+
