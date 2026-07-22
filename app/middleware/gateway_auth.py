@@ -37,8 +37,13 @@ class GatewayAuthMiddleware(BaseHTTPMiddleware):
     ) -> Response:
         path = request.url.path
 
-        # Skip auth for health checks, docs, and static paths
-        if path in self.SKIP_PATHS or path.startswith("/static"):
+        # Skip auth for health checks, docs, static, internal, and websocket paths
+        if (
+            path in self.SKIP_PATHS
+            or path.startswith("/static")
+            or path.startswith("/api/internal")
+            or path.endswith("/ws")
+        ):
             return await call_next(request)
 
         # Extract gateway-injected headers
