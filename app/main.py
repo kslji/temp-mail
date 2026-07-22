@@ -6,9 +6,12 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
+import logging
+
+logger = logging.getLogger("tempmail.api")
 
 from .config import settings
 from .database import get_db, init_db
@@ -43,6 +46,69 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+from typing import Dict, Set
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: Dict[str, Set[WebSocket]] = {}
+
+    async def connect(self, address: str, websocket: WebSocket):
+        await websocket.accept()
+        addr_lower = address.lower()
+        if addr_lower not in self.active_connections:
+            self.active_connections[addr_lower] = set()
+        self.active_connections[addr_lower].add(websocket)
+        logger.info(f"WebSocket client connected to inbox: {addr_lower}")
+
+    def disconnect(self, address: str, websocket: WebSocket):
+        addr_lower = address.lower()
+        if addr_lower in self.active_connections:
+            self.active_connections[addr_lower].discard(websocket)
+            if not self.active_connections[addr_lower]:
+                del self.active_connections[addr_lower]
+        logger.info(f"WebSocket client disconnected from inbox: {addr_lower}")
+
+    async def broadcast_to_inbox(self, address: str, message: dict):
+        addr_lower = address.lower()
+        if addr_lower in self.active_connections:
+            websockets = list(self.active_connections[addr_lower])
+            for websocket in websockets:
+                try:
+                    await websocket.send_json(message)
+                except Exception as e:
+                    logger.error(f"Error sending message to WebSocket: {e}")
+                    self.disconnect(addr_lower, websocket)
+
+manager = ConnectionManager()
+
+
+@app.post("/api/internal/new-message")
+async def internal_new_message(address: str, message_summary: dict):
+    await manager.broadcast_to_inbox(address, message_summary)
+    return {"status": "ok"}
+
+
+@app.websocket("/api/inbox/{address}/ws")
+async def websocket_endpoint(websocket: WebSocket, address: str):
+    db = await get_db()
+    try:
+        await _require_inbox(address, db)
+    except Exception:
+        await websocket.accept()
+        await websocket.close(code=4004, reason="Inbox expired or invalid")
+        return
+        
+    await manager.connect(address, websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(address, websocket)
+    except Exception as e:
+        logger.error(f"WebSocket exception for {address}: {e}")
+        manager.disconnect(address, websocket)
 
 
 @app.get("/api/domains")

@@ -12,6 +12,10 @@ import uuid
 from email import message_from_bytes
 from email.message import Message as EmailMessage
 from datetime import datetime
+import json
+import urllib.request
+import urllib.parse
+import asyncio
 
 # pyrefly: ignore [missing-import]
 from aiosmtpd.controller import Controller
@@ -22,6 +26,24 @@ from .config import settings
 from .database import get_db
 
 logger = logging.getLogger("tempmail.smtp")
+
+
+async def notify_fastapi_async(address: str, message_summary: dict):
+    def _send():
+        try:
+            url = f"http://127.0.0.1:8000/api/internal/new-message?address={urllib.parse.quote(address)}"
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(message_summary, default=str).encode('utf-8'),
+                headers={'Content-Type': 'application/json'},
+                method='POST'
+            )
+            with urllib.request.urlopen(req, timeout=2) as response:
+                pass
+        except Exception as e:
+            logger.error(f"Failed to notify FastAPI of new message: {e}")
+
+    await asyncio.get_event_loop().run_in_executor(None, _send)
 
 
 def _extract_bodies_and_attachments(msg: EmailMessage):
@@ -118,6 +140,16 @@ class TempMailHandler:
                 "attachments": msg_attachments,
             }
             await db.messages.insert_one(message)
+            
+            # Notify FastAPI to push the new message to WebSockets in real-time
+            message_summary = {
+                "id": message_id,
+                "sender": message.get("sender"),
+                "subject": message.get("subject"),
+                "received_at": message["received_at"].isoformat() + "Z" if hasattr(message["received_at"], "isoformat") else str(message["received_at"]),
+                "has_attachments": len(message.get("attachments", [])) > 0
+            }
+            asyncio.create_task(notify_fastapi_async(rcpt, message_summary))
 
         return "250 Message accepted for delivery"
 
